@@ -9,9 +9,13 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@ai-sdk/openai": "3.0.21",
+    "@ai-sdk/react": "3.0.59",
+    "ai": "6.0.57",
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "undici": "7.19.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
