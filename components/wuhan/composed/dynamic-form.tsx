@@ -700,7 +700,7 @@ function renderFieldControl(
 
     case "switch":
       return (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 relative">
           <Switch
             id={field.name}
             checked={formField.value as boolean}

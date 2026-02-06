@@ -96,11 +96,6 @@ export const streamChunks: ChatMessage[] = [
     role: "assistant",
     parts: [
       {
-        type: "text",
-        id: "p5",
-        text: "\n根据分析结果，我为您生成以下待办事项：",
-      },
-      {
         type: "thinking",
         id: "p4",
         thinkingId: "analyze",
@@ -141,18 +136,25 @@ export const streamChunks: ChatMessage[] = [
           {
             status: "success",
             title: "生成风险点说明",
-            items: [{ content: "已识别 3 个潜在风险点" }],
+            items: [
+              {
+                content: "已识别 3 个潜在风险点",
+              },
+              {
+                content: "根据分析结果，我为您生成以下待办事项：",
+                taskList: {
+                  taskListId: "todos",
+                  title: "待办事项",
+                  tasks: [
+                    { id: "t1", content: "审核候选人简历", order: 1 },
+                    { id: "t2", content: "安排第一轮面试", order: 2 },
+                    { id: "t3", content: "发放offer", order: 3 },
+                  ],
+                },
+              },
+            ],
           },
         ],
-        taskList: {
-          taskListId: "todos",
-          title: "待办事项",
-          tasks: [
-            { id: "t1", content: "审核候选人简历", order: 1 },
-            { id: "t2", content: "安排第一轮面试", order: 2 },
-            { id: "t3", content: "发放offer", order: 3 },
-          ],
-        },
       },
     ],
   },

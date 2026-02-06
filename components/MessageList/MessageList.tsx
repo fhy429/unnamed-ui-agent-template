@@ -12,28 +12,43 @@ export interface MessageItem {
   parts?: MessagePart[];
   timestamp?: Date;
 }
-interface PendingInteraction {
-  type: "form" | "tasklist";
-  id: string;
-  formData?: Record<string, unknown>;
-  tasks?: Array<{ id: string; content: string; completed?: boolean }>;
-}
 
 interface MessageListProps {
   messages: MessageItem[];
-  pendingInteraction?: PendingInteraction | null;
+  pendingInteraction?: { type: "form" | "tasklist"; id: string } | null;
   onConfirmForm?: (formData: Record<string, unknown>) => void;
-  onUpdateTaskList?: (tasks: Array<{ id: string; content: string; completed?: boolean }>) => void;
+  onUpdateTaskList?: (taskListId: string, tasks: Array<{ id: string; content: string; completed?: boolean }>) => void;
 }
 
 export function MessageList({ messages, pendingInteraction, onConfirmForm, onUpdateTaskList }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // 自动滚动到底部
+  console.log("[MessageList] Rendering with messages:", {
+    count: messages.length,
+    hasParts: messages.length > 0 ? messages[0].parts?.length ?? 0 : 0,
+    firstMessageRole: messages.length > 0 ? messages[0].role : 'none'
+  });
+
+  // 自动滚动到底部 - 优化版本，避免表单状态变化时闪烁
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (!scrollRef.current) return;
+
+    const scrollContainer = scrollRef.current;
+    const previousHeight = scrollContainer.scrollHeight;
+
+    // 使用 requestAnimationFrame 确保在渲染完成后执行
+    const animationFrameId = requestAnimationFrame(() => {
+      // 检查高度是否真的变化了（避免不必要的滚动）
+      const currentHeight = scrollContainer.scrollHeight;
+
+      // 只有当内容增加或高度变化时才滚动
+      // 如果高度减少（表单确认后隐藏按钮），则不滚动，避免滚动条闪烁
+      if (currentHeight > previousHeight || messages.length === 0) {
+        scrollContainer.scrollTop = currentHeight;
+      }
+    });
+
+    return () => cancelAnimationFrame(animationFrameId);
   }, [messages]);
 
   if (messages.length === 0) {

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import Markdown from "../wuhan/composed/markdown";
 import {
   DynamicForm,
@@ -14,6 +14,48 @@ import {
 import { ExecutionResult } from "../wuhan/composed/execution-result";
 import { ThinkingStep, type ThinkingStepContentBlock } from "../wuhan/composed/thinking-process";
 import type { ThinkingStepItemProps } from "../wuhan/composed/thinking-step-item";
+
+// ==================== TaskList 内部状态组件 ====================
+
+interface TaskListWithStateProps {
+  taskList: {
+    taskListId: string;
+    title?: string;
+    tasks: TodoItem[];
+  };
+  isActive: boolean;
+  onConfirm?: (taskListId: string, tasks: TodoItem[]) => void;
+}
+
+function TaskListWithState({ taskList, isActive, onConfirm }: TaskListWithStateProps) {
+  // 使用 ref 保持对最新 taskList 的引用
+  const taskListRef = useRef(taskList);
+  // 初始化时设置一次，之后不再在 render 中设置
+  useEffect(() => {
+    taskListRef.current = taskList;
+  }, [taskList]);
+
+  // 使用 state 管理编辑后的 tasks
+  const [editedTasks, setEditedTasks] = useState<TodoItem[]>(taskList.tasks);
+
+  // 当源数据变化时，同步 editedTasks
+  useEffect(() => {
+    setEditedTasks(taskListRef.current.tasks);
+  }, []);
+
+  return (
+    <TaskList
+      dataSource={editedTasks}
+      title={taskList.title || "待办清单"}
+      status={isActive ? "confirmed" : "pending"}
+      editable={!isActive}
+      onItemsChange={setEditedTasks}
+      onConfirmExecute={() => {
+        onConfirm?.(taskListRef.current.taskListId, editedTasks);
+      }}
+    />
+  );
+}
 
 // ==================== 消息部分的类型定义 ====================
 
@@ -62,17 +104,17 @@ interface ThinkingPart extends BasePart {
     status: "idle" | "running" | "success" | "error" | "cancelled";
     title: string;
     items?: Array<{
-      content: string;
+      content?: string;
       toolCall?: { icon?: React.ReactNode; title?: string; content?: string };
       files?: Array<{ icon?: string; name: string }>;
+      taskList?: {
+        taskListId: string;
+        title?: string;
+        tasks: TodoItem[];
+      };
     }>;
     defaultOpen?: boolean;
   }>;
-  taskList?: {
-    taskListId: string;
-    title?: string;
-    tasks: TodoItem[];
-  };
 }
 
 export type MessagePart =
@@ -99,7 +141,6 @@ function InteractiveForm({ formPart, onSubmit }: InteractiveFormProps) {
   const formRef = useRef<DynamicFormRef>(null);
 
   return (
-    <div className="border border-[#4B6FED] rounded-lg p-4 bg-[#F0F4FF]">
       <DynamicForm
         ref={formRef}
         schema={formPart.schema}
@@ -111,64 +152,6 @@ function InteractiveForm({ formPart, onSubmit }: InteractiveFormProps) {
           onSubmit(values);
         }}
       />
-    </div>
-  );
-}
-
-// ==================== 交互式任务列表组件 ====================
-
-interface InteractiveTaskListProps {
-  taskListId: string;
-  title?: string;
-  tasks: TodoItem[];
-  onConfirm: (tasks: TodoItem[]) => void;
-}
-
-function InteractiveTaskList({ title, tasks, onConfirm }: InteractiveTaskListProps) {
-  // 本地状态用于存储用户编辑的任务列表
-  const [localTasks, setLocalTasks] = React.useState<TodoItem[]>([]);
-
-  // 使用 useRef 存储初始任务列表的 ID，避免不必要的重置
-  const initialTasksIdRef = React.useRef<string>(null);
-
-  // 当 tasks prop 变化时（用户填写后继续流式），更新本地状态
-  const currentTasksId = tasks.map(t => `${t.id}-${t.content}`).join(",");
-
-  React.useEffect(() => {
-    // 如果是第一次加载或者任务内容发生了变化，更新本地状态
-    if (!initialTasksIdRef.current || initialTasksIdRef.current !== currentTasksId) {
-      setLocalTasks(tasks.map((t) => ({
-        id: t.id || String(t.order),
-        content: t.content,
-        order: t.order,
-      })));
-      initialTasksIdRef.current = currentTasksId;
-    }
-  }, [currentTasksId, tasks]);
-
-  const handleTasksChange = (newTasks: Array<{ id: string; content: string; completed?: boolean; order?: number }>) => {
-    setLocalTasks(newTasks.map((t, index) => ({
-      id: t.id,
-      content: t.content,
-      order: t.order ?? index + 1,
-    })));
-  };
-
-  const handleConfirm = () => {
-    onConfirm(localTasks);
-  };
-
-  return (
-    <div className="border border-[#4B6FED] rounded-lg p-4 bg-[#F0F4FF]">
-      <TaskList
-        dataSource={localTasks}
-        title={title || "待办清单"}
-        status="pending"
-        editable={true}
-        onItemsChange={handleTasksChange}
-        onConfirmExecute={handleConfirm}
-      />
-    </div>
   );
 }
 
@@ -213,32 +196,45 @@ function renderExecutionResultPart(part: ExecutionResultPart): React.ReactNode {
   );
 }
 
-function renderThinkingPart(part: ThinkingPart): React.ReactNode {
+function renderThinkingPart(part: ThinkingPart, activeTaskListIds: Set<string>, onConfirmTaskList?: (taskListId: string, tasks: Array<{ id: string; content: string; completed?: boolean }>) => void): React.ReactNode {
   const contentBlocks: ThinkingStepContentBlock[] = [];
 
   if (part.steps && part.steps.length > 0) {
+    // 处理每个 step，如果有 item 包含 taskList，则合并到 content 中渲染
+    const processedSteps = part.steps.map((step) => {
+      if (step.items) {
+        const newItems = step.items.map((item) => {
+          if (item.taskList) {
+            // 判断这个 taskList 是否处于活跃状态（pending 或已确认）
+            const isActive = activeTaskListIds.has(item.taskList.taskListId);
+            
+            // 把 taskList 合并到 content 中渲染
+            return {
+              ...item,
+              content: (
+                <div>
+                  {item.content}
+                  <div className="mt-4">
+                    <TaskListWithState
+                      taskList={item.taskList}
+                      isActive={isActive}
+                      onConfirm={onConfirmTaskList}
+                    />
+                  </div>
+                </div>
+              ),
+            };
+          }
+          return item;
+        });
+        return { ...step, items: newItems };
+      }
+      return step;
+    });
+
     contentBlocks.push({
       type: "subSteps",
-      steps: part.steps as ThinkingStepItemProps[],
-    });
-  }
-
-  if (part.taskList) {
-    contentBlocks.push({
-      type: "node",
-      key: `tasklist-${part.taskList.taskListId}`,
-      node: (
-        <div className="mt-4">
-          <TaskList
-            dataSource={part.taskList.tasks}
-            title={part.taskList.title || "待办清单"}
-            status="pending"
-            editable={false}
-            onItemsChange={() => {}}
-            onConfirmExecute={() => {}}
-          />
-        </div>
-      ),
+      steps: processedSteps as ThinkingStepItemProps[],
     });
   }
 
@@ -268,14 +264,13 @@ interface PendingInteraction {
   type: "form" | "tasklist";
   id: string;
   formData?: Record<string, unknown>;
-  tasks?: Array<{ id: string; content: string; completed?: boolean }>;
 }
 
 interface ComposerMarkdownProps {
   message?: ChatMessage | null;
   pendingInteraction?: PendingInteraction | null;
   onConfirmForm?: (formData: Record<string, unknown>) => void;
-  onUpdateTaskList?: (tasks: Array<{ id: string; content: string; completed?: boolean }>) => void;
+  onUpdateTaskList?: (taskListId: string, tasks: Array<{ id: string; content: string; completed?: boolean }>) => void;
 }
 
 export function ComposerMarkdown({
@@ -284,6 +279,28 @@ export function ComposerMarkdown({
   onConfirmForm,
   onUpdateTaskList,
 }: ComposerMarkdownProps) {
+  console.log("[ComposerMarkdown] Rendering:", {
+    hasMessage: !!message,
+    messageId: message?.id,
+    partsCount: message?.parts?.length ?? 0,
+    parts: message?.parts?.map(p => p.id + "|" + p.type) ?? []
+  });
+
+  // 使用内部状态跟踪已确认的 taskList ID
+  const [confirmedTaskListIds, setConfirmedTaskListIds] = React.useState<Set<string>>(new Set());
+
+  // 查找当前 pending 的 taskList ID（只有 type 为 "tasklist" 时才有效）
+  const pendingTaskListId = pendingInteraction?.type === "tasklist" ? pendingInteraction.id : null;
+
+  // 合并：pending 或已确认的 taskList ID
+  const activeTaskListIds = React.useMemo(() => {
+    const ids = new Set<string>(confirmedTaskListIds);
+    if (pendingTaskListId) {
+      ids.add(pendingTaskListId);
+    }
+    return ids;
+  }, [confirmedTaskListIds, pendingTaskListId]);
+
   if (!message) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
@@ -295,6 +312,14 @@ export function ComposerMarkdown({
   const containerClass = message.role === "user"
     ? "flex justify-end w-full"
     : "flex justify-start w-full";
+
+  // 处理 taskList 确认
+  const handleTaskListConfirm = (taskListId: string, tasks: Array<{ id: string; content: string; completed?: boolean }>) => {
+    // 标记为已确认
+    setConfirmedTaskListIds(prev => new Set(prev).add(taskListId));
+    // 调用父组件回调继续流式
+    onUpdateTaskList?.(taskListId, tasks);
+  };
 
   return (
     <div className={containerClass}>
@@ -318,29 +343,20 @@ export function ComposerMarkdown({
             );
           }
 
-          // 检查是否是当前待交互的任务列表
-          const isPendingTaskList = pendingInteraction?.type === "tasklist" && 
-                                   part.type === "task-list" &&
-                                   (part as TaskListPart).taskListId === pendingInteraction.id;
-          
-          if (isPendingTaskList) {
-            const taskListPart = part as TaskListPart;
-            return (
-              <div key={part.id} className="my-4 min-w-[600px]">
-                <InteractiveTaskList
-                  taskListId={taskListPart.taskListId}
-                  title={taskListPart.title}
-                  tasks={taskListPart.tasks}
-                  onConfirm={(tasks) => {
-                    onUpdateTaskList?.(tasks);
-                  }}
-                />
-              </div>
-            );
-          }
-
           if (part.type === "text") {
             return renderTextPart(part);
+          }
+
+          if (part.type === "thinking") {
+            return (
+              <div key={part.id} className="my-4 min-w-[600px]">
+                {renderThinkingPart(
+                  part as ThinkingPart,
+                  activeTaskListIds,
+                  handleTaskListConfirm
+                )}
+              </div>
+            );
           }
 
           return (
