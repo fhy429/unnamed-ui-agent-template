@@ -1,238 +1,204 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { MessageBubble } from "@/components";
-import Sender from "@/components/Sender";
-import Markdown from "@/components/Markdown";
+import { useState, useCallback, useMemo } from "react";
+import { Sender } from "@/components/Sender/Sender";
+import { MessageList } from "@/components/MessageList/MessageList";
+import type { MessageItem } from "@/components/MessageList/MessageList";
 
-// 为同一个 messageKey 保持稳定的时间文案（仅客户端渲染）
-const messageTimeCache = new Map<string, string>();
+// 导入新的 AISDK Hook
+import { useAisdkStream } from "@/hooks/useAisdkStream";
+import { getStreamChunks, type StreamScenario } from "@/data/openai-stream-chunks";
 
-export default function ChatPageClient() {
-  const router = useRouter();
-  const [inputValue, setInputValue] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+// ==================== 场景选项 ====================
 
-  const authed = !!localStorage.getItem("authenticated");
+const SCENARIO_OPTIONS: { value: StreamScenario; label: string }[] = [
+  { value: "full-demo", label: "完整演示（5条消息）" },
+  { value: "recruitment-form", label: "1. 招聘表单" },
+  { value: "analysis", label: "2. 分析中" },
+  { value: "analysis-complete", label: "3. 分析完成+任务列表" },
+  { value: "search-candidates", label: "4. 搜索候选人" },
+  { value: "confirm-form", label: "5. 确认表单" },
+];
 
-  useEffect(() => {
-    if (!authed) router.replace("/login");
-  }, [authed, router]);
+export default function PlaygroundPage() {
+  const [messages, setMessages] = useState<MessageItem[]>([]);
+  const [selectedScenario, setSelectedScenario] = useState<StreamScenario>("full-demo");
 
-  const { messages, sendMessage, status, error } = useChat({
-    transport: new DefaultChatTransport({
-      api: "/api/chat",
-    }),
-  });
+  // 使用新的 AISDK Hook
+  const {
+    parts: streamingParts,
+    isStreaming,
+    pendingInteraction,
+    startStream,
+    reset: resetAisdk,
+    confirmForm,
+    updateTaskList,
+  } = useAisdkStream();
 
-  const isLoading = status === "streaming" || status === "submitted";
-
-  // 自动滚动到底部
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
-
-  const formatTime = (date?: Date) => {
-    const now = date || new Date();
-    // 北京时间（UTC+8）
-    const beijingTime = new Date(
-      now.getTime() + now.getTimezoneOffset() * 60000 + 8 * 3600000,
-    );
-    const month = beijingTime.getMonth() + 1;
-    const day = beijingTime.getDate();
-    const hours = beijingTime.getHours();
-    const minutes = beijingTime.getMinutes();
-    return `${month}月${day}日 ${hours}:${minutes.toString().padStart(2, "0")}`;
-  };
-
-  const getOrCreateTimeText = (key: string) => {
-    const cached = messageTimeCache.get(key);
-    if (cached) return cached;
-    const t = formatTime();
-    messageTimeCache.set(key, t);
-    return t;
-  };
-
-  const renderThinking = () => (
-    <div style={{ padding: "16px", color: "#666" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <span>正在思考...</span>
-      </div>
-    </div>
-  );
-
-  const renderAssistantBody = (args: {
-    messageText: string;
-    isUpdating: boolean;
-    messageId?: string;
-    errorMessage?: string;
-  }) => {
-    if (args.errorMessage) {
-      return (
-        <Markdown
-          content={`**消息发送失败**\n\n${args.errorMessage}`}
-          status="error"
-          messageId={args.messageId}
-        />
-      );
+  // 将流式 parts 转换为 MessageItem
+  const streamingMessages: MessageItem[] = useMemo(() => {
+    if (streamingParts.length === 0) {
+      console.log("[Page] streamingParts is empty, returning []");
+      return [];
     }
 
-    if (args.messageText || args.isUpdating) {
-      return (
-        <Markdown
-          content={args.messageText || ""}
-          status={args.isUpdating ? "updating" : "success"}
-          messageId={args.messageId}
-        />
-      );
+    console.log("[Page] streamingParts changed:", {
+      count: streamingParts.length,
+      parts: streamingParts.map(p => p.id + "|" + p.type)
+    });
+
+    return [
+      {
+        id: "aisdk-streaming-msg",
+        role: "assistant",
+        parts: streamingParts,
+      },
+    ];
+  }, [streamingParts]);
+
+  // 合并所有消息
+  const allMessages: MessageItem[] = useMemo(() => {
+    const result = [...messages, ...streamingMessages];
+    console.log("[Page] allMessages updated:", {
+      totalCount: result.length,
+      regularMessages: messages.length,
+      streamingMessages: streamingMessages.length,
+      hasStreaming: streamingMessages.length > 0
+    });
+    return result;
+  }, [messages, streamingMessages]);
+
+  const handleSendMessage = useCallback((content: string) => {
+    if (!content.trim()) return;
+
+    // 添加用户消息
+    const userMessage: MessageItem = {
+      id: Date.now().toString(),
+      role: "user",
+      content: content.trim(),
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+
+    // 模拟 AI 回复
+    setTimeout(() => {
+      const aiMessage: MessageItem = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `收到你的消息："${content.trim()}"。这是 AI 的回复示例。`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, aiMessage]);
+    }, 1000);
+  }, []);
+
+  const handleStartStream = useCallback(() => {
+    console.log("[Page] Starting stream with scenario:", selectedScenario);
+    const chunks = getStreamChunks(selectedScenario);
+    console.log("[Page] Chunks count:", chunks.length);
+    startStream(chunks);
+  }, [selectedScenario, startStream]);
+
+  const handleReset = useCallback(() => {
+    resetAisdk();
+    setMessages([]);
+  }, [resetAisdk]);
+
+  const handleScenarioChange = useCallback((scenario: StreamScenario) => {
+    setSelectedScenario(scenario);
+  }, []);
+
+  // 处理表单确认
+  const handleConfirmForm = useCallback((formData: Record<string, unknown>) => {
+    console.log("[Page] handleConfirmForm:", formData);
+    confirmForm(formData);
+  }, [confirmForm]);
+
+  // 处理任务列表更新
+  const handleUpdateTaskList = useCallback((taskListId: string, tasks: Array<{ id: string; content: string; completed?: boolean }>) => {
+    console.log("[Page] handleUpdateTaskList:", { taskListId, tasks });
+    updateTaskList(tasks);
+  }, [updateTaskList]);
+
+  // 转换 pendingInteraction 类型
+  const pendingInteractionForList = useMemo(() => {
+    if (!pendingInteraction || !pendingInteraction.id) {
+      return null;
     }
-
-    return renderThinking();
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem("authenticated");
-    router.push("/login");
-  };
-
-  const handleSend = (value: string) => {
-    if (!value.trim()) return;
-    sendMessage({ parts: [{ type: "text", text: value }] });
-    setInputValue("");
-  };
-
-  if (!authed) return null;
-
-  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-  const isStreaming = isLoading && lastMessage?.role === "assistant";
-  const shouldShowLoadingAI =
-    (isLoading || (error && lastMessage?.role === "user")) &&
-    lastMessage?.role === "user";
+    if (pendingInteraction.type !== "form") {
+      return null;
+    }
+    return {
+      type: "form" as const,
+      id: pendingInteraction.id,
+    };
+  }, [pendingInteraction]);
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      <div className="w-full bg-white border-b border-gray-200 shadow-sm">
-        <div className="max-w-4xl mx-auto flex justify-between items-center px-6 py-4">
-          <h1 className="text-xl font-semibold text-gray-900">AI 助手</h1>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-gray-600 hover:text-gray-900 transition-colors px-3 py-1.5 rounded-md hover:bg-gray-100"
-          >
-            退出登录
-          </button>
-        </div>
+    <div className="w-full h-screen flex flex-col">
+      {/* 流式演示控制栏 */}
+      <div className="border-b border-[#E1E0E7] h-[52px] shrink-0 px-4 flex items-center gap-4 bg-[#F9F9FB]">
+        <span className="text-sm text-[#787A80]">流式演示：</span>
+        
+        {/* 场景选择 */}
+        <select
+          value={selectedScenario}
+          onChange={(e) => handleScenarioChange(e.target.value as StreamScenario)}
+          className="px-3 py-1.5 bg-white border border-[#E1E0E7] text-[#403F4D] text-sm rounded hover:bg-gray-50 transition-colors"
+        >
+          {SCENARIO_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        
+        <button
+          onClick={handleStartStream}
+          disabled={isStreaming}
+          className="px-3 py-1.5 bg-[#4B6FED] text-white text-sm rounded hover:bg-[#3D5BD9] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {isStreaming ? "流式输出中..." : "开始流式演示"}
+        </button>
+        
+        <button
+          onClick={handleReset}
+          className="px-3 py-1.5 bg-white border border-[#E1E0E7] text-[#403F4D] text-sm rounded hover:bg-gray-50 transition-colors"
+        >
+          重置
+        </button>
+        
+        {/* 状态指示器 */}
+        <span className={`text-xs px-2 py-1 rounded ${
+          isStreaming 
+            ? "bg-green-100 text-green-700" 
+            : "bg-gray-100 text-gray-500"
+        }`}>
+          {isStreaming ? "流式中" : "空闲"}
+        </span>
+        
+        {/* 待交互提示 */}
+        {pendingInteraction && (
+          <span className="text-xs px-2 py-1 rounded bg-yellow-100 text-yellow-700">
+            等待交互: {pendingInteraction.type === "form" ? "请填写表单" : "请确认任务列表"}
+          </span>
+        )}
       </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-4xl mx-auto space-y-6">
-          {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center py-12">
-              <div className="text-gray-400 mb-4">
-                <svg
-                  className="w-16 h-16 mx-auto"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                  />
-                </svg>
-              </div>
-              <h2 className="text-xl font-medium text-gray-600 mb-2">
-                开始对话
-              </h2>
-              <p className="text-sm text-gray-400">输入消息开始与 AI 助手对话</p>
-            </div>
-          ) : (
-            <>
-              {messages.map((message, index) => {
-                const isUser = message.role === "user";
-                const isLastMessage = index === messages.length - 1;
-                const isUpdating = isLastMessage && isStreaming;
-                const isError = isLastMessage && error && !isUser;
-
-                const messageKey = message.id ?? `${message.role}-${index}`;
-                const timeText = getOrCreateTimeText(messageKey);
-
-                const messageText = message.parts
-                  .filter((part) => part.type === "text")
-                  .map((part) => part.text)
-                  .join("");
-
-                if (isUser) {
-                  return (
-                    <MessageBubble
-                      key={messageKey}
-                      role="user"
-                      placement="end"
-                      content={messageText}
-                      time={timeText}
-                    />
-                  );
-                }
-
-                return (
-                  <MessageBubble
-                    key={messageKey}
-                    role="assistant"
-                    placement="start"
-                    time={timeText}
-                  >
-                    {renderAssistantBody({
-                      messageText,
-                      isUpdating,
-                      messageId: message.id,
-                      errorMessage: isError
-                        ? error?.message || "请稍后重试"
-                        : undefined,
-                    })}
-                  </MessageBubble>
-                );
-              })}
-
-              {shouldShowLoadingAI && (
-                <MessageBubble
-                  key={error ? "error-ai-message" : "loading-ai-message"}
-                  role="assistant"
-                  placement="start"
-                  time={getOrCreateTimeText(
-                    error ? "error-ai-message" : "loading-ai-message",
-                  )}
-                >
-                  {renderAssistantBody({
-                    messageText: "",
-                    isUpdating: false,
-                    errorMessage: error ? error.message || "请稍后重试" : undefined,
-                  })}
-                </MessageBubble>
-              )}
-            </>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
-
-      <div className="px-4 py-4 bg-white border-t border-gray-200">
-        <div className="max-w-4xl mx-auto">
-          <Sender
-            placeholder="输入消息..."
-            value={inputValue}
-            onChange={setInputValue}
-            onSubmit={handleSend}
-            disabled={isLoading}
-            loading={isLoading}
-            dataSourceCount={0}
+      
+      <div className="flex-1 overflow-hidden flex flex-col overflow-hidden">
+        <div className="flex-1 w-[800px] mx-auto flex flex-col overflow-hidden">
+          <MessageList
+            messages={allMessages}
+            pendingInteraction={pendingInteractionForList}
+            onConfirmForm={handleConfirmForm}
+            onUpdateTaskList={handleUpdateTaskList}
           />
+          <div className="pb-6 shrink-0">
+            <Sender onSend={handleSendMessage} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
