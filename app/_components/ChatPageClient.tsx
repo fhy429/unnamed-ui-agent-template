@@ -1,238 +1,119 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { MessageBubble } from "@/components";
-import Sender from "@/components/Sender";
-import Markdown from "@/components/Markdown";
+import { useState, useCallback, useMemo } from "react";
+import { Sender } from "@/components/Sender/Sender";
+import { MessageList } from "@/components/MessageList/MessageList";
+import type { MessagePart } from "@/components/ComposedMarkdown/ComposedMarkdown";
+import { useStreamMessages } from "@/components/ComposedMarkdown/hooks/useStreamMessages";
+import { streamChunks } from "@/components/ComposedMarkdown/data/streamChunks";
 
-// 为同一个 messageKey 保持稳定的时间文案（仅客户端渲染）
-const messageTimeCache = new Map<string, string>();
+// ==================== 消息项类型定义 ====================
 
-export default function ChatPageClient() {
-  const router = useRouter();
-  const [inputValue, setInputValue] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+export interface MessageItem {
+  id: string;
+  role: "user" | "assistant";
+  content?: string;
+  parts?: MessagePart[];
+  timestamp?: Date;
+}
 
-  const authed = !!localStorage.getItem("authenticated");
+export default function PlaygroundPage() {
+  const [messages, setMessages] = useState<MessageItem[]>([]);
 
-  useEffect(() => {
-    if (!authed) router.replace("/login");
-  }, [authed, router]);
+  // 流式消息状态
+  const {
+    messages: streamingParts,
+    isStreaming,
+    startStream,
+    reset: resetStream,
+    pendingInteraction,
+    confirmForm,
+    updateTaskList,
+  } = useStreamMessages({ chunks: streamChunks });
 
-  const { messages, sendMessage, status, error } = useChat({
-    transport: new DefaultChatTransport({
-      api: "/api/chat",
-    }),
-  });
+  // 将流式 parts 转换为 MessageItem
+  const streamingMessages: MessageItem[] = useMemo(() => {
+    if (streamingParts.length === 0) return [];
 
-  const isLoading = status === "streaming" || status === "submitted";
+    return [
+      {
+        id: "streaming-msg",
+        role: "assistant",
+        parts: streamingParts,
+      },
+    ];
+  }, [streamingParts]);
 
-  // 自动滚动到底部
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isLoading]);
+  // 合并所有消息（普通消息 + 流式消息）
+  const allMessages: MessageItem[] = useMemo(() => {
+    return [...messages, ...streamingMessages];
+  }, [messages, streamingMessages]);
 
-  const formatTime = (date?: Date) => {
-    const now = date || new Date();
-    // 北京时间（UTC+8）
-    const beijingTime = new Date(
-      now.getTime() + now.getTimezoneOffset() * 60000 + 8 * 3600000,
-    );
-    const month = beijingTime.getMonth() + 1;
-    const day = beijingTime.getDate();
-    const hours = beijingTime.getHours();
-    const minutes = beijingTime.getMinutes();
-    return `${month}月${day}日 ${hours}:${minutes.toString().padStart(2, "0")}`;
-  };
+  const handleSendMessage = useCallback((content: string) => {
+    if (!content.trim()) return;
 
-  const getOrCreateTimeText = (key: string) => {
-    const cached = messageTimeCache.get(key);
-    if (cached) return cached;
-    const t = formatTime();
-    messageTimeCache.set(key, t);
-    return t;
-  };
+    // 添加用户消息
+    const userMessage: MessageItem = {
+      id: Date.now().toString(),
+      role: "user",
+      content: content.trim(),
+      timestamp: new Date(),
+    };
 
-  const renderThinking = () => (
-    <div style={{ padding: "16px", color: "#666" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <span>正在思考...</span>
-      </div>
-    </div>
-  );
+    setMessages((prev) => [...prev, userMessage]);
 
-  const renderAssistantBody = (args: {
-    messageText: string;
-    isUpdating: boolean;
-    messageId?: string;
-    errorMessage?: string;
-  }) => {
-    if (args.errorMessage) {
-      return (
-        <Markdown
-          content={`**消息发送失败**\n\n${args.errorMessage}`}
-          status="error"
-          messageId={args.messageId}
-        />
-      );
-    }
+    // 模拟 AI 回复
+    setTimeout(() => {
+      const aiMessage: MessageItem = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `收到你的消息："${content.trim()}"。这是 AI 的回复示例。`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, aiMessage]);
+    }, 1000);
+  }, []);
 
-    if (args.messageText || args.isUpdating) {
-      return (
-        <Markdown
-          content={args.messageText || ""}
-          status={args.isUpdating ? "updating" : "success"}
-          messageId={args.messageId}
-        />
-      );
-    }
-
-    return renderThinking();
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem("authenticated");
-    router.push("/login");
-  };
-
-  const handleSend = (value: string) => {
-    if (!value.trim()) return;
-    sendMessage({ parts: [{ type: "text", text: value }] });
-    setInputValue("");
-  };
-
-  if (!authed) return null;
-
-  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-  const isStreaming = isLoading && lastMessage?.role === "assistant";
-  const shouldShowLoadingAI =
-    (isLoading || (error && lastMessage?.role === "user")) &&
-    lastMessage?.role === "user";
+  const handleStartStream = useCallback(() => {
+    resetStream();
+    startStream();
+  }, [startStream, resetStream]);
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      <div className="w-full bg-white border-b border-gray-200 shadow-sm">
-        <div className="max-w-4xl mx-auto flex justify-between items-center px-6 py-4">
-          <h1 className="text-xl font-semibold text-gray-900">AI 助手</h1>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-gray-600 hover:text-gray-900 transition-colors px-3 py-1.5 rounded-md hover:bg-gray-100"
-          >
-            退出登录
-          </button>
-        </div>
+    <div className="w-full h-screen flex flex-col">
+      {/* 流式演示控制栏 */}
+      <div className="border-b border-[#E1E0E7] h-[52px] shrink-0 px-4 flex items-center gap-4 bg-[#F9F9FB]">
+        <span className="text-sm text-[#787A80]">流式演示：</span>
+        <button
+          onClick={handleStartStream}
+          disabled={isStreaming}
+          className="px-3 py-1.5 bg-[#4B6FED] text-white text-sm rounded hover:bg-[#3D5BD9] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {isStreaming ? "流式输出中..." : "开始流式演示"}
+        </button>
+        <button
+          onClick={() => {
+            resetStream();
+            setMessages([]);
+          }}
+          className="px-3 py-1.5 bg-white border border-[#E1E0E7] text-[#403F4D] text-sm rounded hover:bg-gray-50 transition-colors"
+        >
+          重置
+        </button>
       </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-4xl mx-auto space-y-6">
-          {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center py-12">
-              <div className="text-gray-400 mb-4">
-                <svg
-                  className="w-16 h-16 mx-auto"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                  />
-                </svg>
-              </div>
-              <h2 className="text-xl font-medium text-gray-600 mb-2">
-                开始对话
-              </h2>
-              <p className="text-sm text-gray-400">输入消息开始与 AI 助手对话</p>
-            </div>
-          ) : (
-            <>
-              {messages.map((message, index) => {
-                const isUser = message.role === "user";
-                const isLastMessage = index === messages.length - 1;
-                const isUpdating = isLastMessage && isStreaming;
-                const isError = isLastMessage && error && !isUser;
-
-                const messageKey = message.id ?? `${message.role}-${index}`;
-                const timeText = getOrCreateTimeText(messageKey);
-
-                const messageText = message.parts
-                  .filter((part) => part.type === "text")
-                  .map((part) => part.text)
-                  .join("");
-
-                if (isUser) {
-                  return (
-                    <MessageBubble
-                      key={messageKey}
-                      role="user"
-                      placement="end"
-                      content={messageText}
-                      time={timeText}
-                    />
-                  );
-                }
-
-                return (
-                  <MessageBubble
-                    key={messageKey}
-                    role="assistant"
-                    placement="start"
-                    time={timeText}
-                  >
-                    {renderAssistantBody({
-                      messageText,
-                      isUpdating,
-                      messageId: message.id,
-                      errorMessage: isError
-                        ? error?.message || "请稍后重试"
-                        : undefined,
-                    })}
-                  </MessageBubble>
-                );
-              })}
-
-              {shouldShowLoadingAI && (
-                <MessageBubble
-                  key={error ? "error-ai-message" : "loading-ai-message"}
-                  role="assistant"
-                  placement="start"
-                  time={getOrCreateTimeText(
-                    error ? "error-ai-message" : "loading-ai-message",
-                  )}
-                >
-                  {renderAssistantBody({
-                    messageText: "",
-                    isUpdating: false,
-                    errorMessage: error ? error.message || "请稍后重试" : undefined,
-                  })}
-                </MessageBubble>
-              )}
-            </>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-      </div>
-
-      <div className="px-4 py-4 bg-white border-t border-gray-200">
-        <div className="max-w-4xl mx-auto">
-          <Sender
-            placeholder="输入消息..."
-            value={inputValue}
-            onChange={setInputValue}
-            onSubmit={handleSend}
-            disabled={isLoading}
-            loading={isLoading}
-            dataSourceCount={0}
+      <div className="flex-1 overflow-hidden flex flex-col overflow-hidden">
+        <div className="flex-1 w-[800px] mx-auto flex flex-col overflow-hidden">
+          <MessageList
+            messages={allMessages}
+            pendingInteraction={pendingInteraction}
+            onConfirmForm={confirmForm}
+            onUpdateTaskList={updateTaskList}
           />
+          <div className="pb-6 shrink-0">
+            <Sender onSend={handleSendMessage} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
