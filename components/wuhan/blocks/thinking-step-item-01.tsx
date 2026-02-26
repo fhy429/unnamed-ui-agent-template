@@ -134,10 +134,6 @@ interface ThinkingStepItemHeaderPrimitiveProps extends React.HTMLAttributes<HTML
    * 按钮禁用状态（仅在可折叠时生效）
    */
   disabled?: boolean;
-  /**
-   * 按钮类型（仅在可折叠时生效）
-   */
-  type?: "button" | "submit" | "reset";
 }
 
 /**
@@ -471,7 +467,6 @@ const ThinkingStepItemHeaderPrimitive = React.forwardRef<
       trailing,
       collapsible = false,
       className,
-      type: _type,
       disabled,
       ...props
     },
@@ -844,6 +839,7 @@ const ThinkingStepItemToolCallPrimitive = React.forwardRef<
         "pb-[var(--padding-com-2xs)]",
         "pl-[var(--padding-com-sm)]",
         "bg-[var(--bg-neutral-light)]",
+        "w-fit",
         className,
       )}
       {...props}
